@@ -1,28 +1,41 @@
+# ------------------------------------------------------------
+# Imports
+# ------------------------------------------------------------
 import streamlit as st
 import pandas as pd
 import numpy as np
-import joblib
 import json
 import matplotlib.pyplot as plt
+import xgboost as xgb
 
-# page configuration
+# ------------------------------------------------------------
+# Page config
+# ------------------------------------------------------------
 st.set_page_config(
     page_title="California Home Price Predictor",
     layout="wide"
 )
 
-# load model and features
-model = joblib.load("final_xgb_nolist.pkl")
+# ------------------------------------------------------------
+# Load model + feature order
+# ------------------------------------------------------------
+# Load XGBoost JSON model (safe for all versions)
+booster = xgb.Booster()
+booster.load_model("xgb_model.json")
+
+# Load feature order for prediction
 with open("features_nolist.json", "r") as f:
     feature_order = json.load(f)
 
-# model metrics
+# ------------------------------------------------------------
+# Model metrics (static — from your notes)
+# ------------------------------------------------------------
 R2 = 0.89
 MAPE = 10.54
 MdAPE = 7.07
 TRAIN_SAMPLES = 44142
 
-# pretty names for bar chart
+# Pretty names for visualization
 pretty_names = {
     "DaysOnMarket": "Days on Market",
     "Latitude": "Latitude",
@@ -38,128 +51,100 @@ pretty_names = {
     "Stories": "Stories"
 }
 
-# page title
+# ------------------------------------------------------------
+# App Title
+# ------------------------------------------------------------
 st.title("California Home Price Prediction")
 
-# tables
+# Tabs
 tab_pred, tab_importance, tab_summary = st.tabs(
     ["Prediction", "Feature Importance", "Model Summary"]
 )
 
-# tab 1: prediction
+# ------------------------------------------------------------
+# Tab 1: Prediction
+# ------------------------------------------------------------
 with tab_pred:
-
     st.subheader("Enter Property Details")
 
     with st.form("prediction_form"):
 
-        # --- LOCATION ---
+        # LOCATION
         st.markdown("#### Location")
         c1, c2 = st.columns(2)
 
         with c1:
             Latitude = st.number_input(
-                "Latitude",
-                min_value=32.0, max_value=42.0, step=0.001,
-                help="California latitude typically ranges from 32–42."
+                "Latitude", 32.0, 42.0, step=0.001
             )
-
         with c2:
             Longitude = st.number_input(
-                "Longitude",
-                min_value=-124.0, max_value=-114.0, step=0.001,
-                help="California longitude typically ranges from -124 to -114."
+                "Longitude", -124.0, -114.0, step=0.001
             )
 
-        # --- SIZE ---
+        # SIZE
         st.markdown("#### Size")
         c3, c4 = st.columns(2)
-
         with c3:
-            LivingArea = st.number_input(
-                "Living Area (sqft)",
-                min_value=1.0, step=50.0,
-                help="Total finished living area (sqft)."
-            )
-
+            LivingArea = st.number_input("Living Area (sqft)", 1.0, step=50.0)
         with c4:
-            LotSizeAcres = st.number_input(
-                "Lot Size (acres)",
-                min_value=0.0, step=0.01,
-                help="Total lot size in acres."
-            )
+            LotSizeAcres = st.number_input("Lot Size (acres)", 0.0, step=0.01)
 
-        Stories = st.number_input(
-            "Stories",
-            min_value=1.0, step=0.5,
-            help="Total building stories including partial floors."
-        )
+        Stories = st.number_input("Stories", 1.0, step=0.5)
 
-        # --- BED & BATH ---
+        # BEDS & BATHS
         st.markdown("#### Bedrooms & Bathrooms")
         c5, c6 = st.columns(2)
 
         with c5:
-            BedroomsTotal = st.number_input("Bedrooms", min_value=1, step=1)
-
+            BedroomsTotal = st.number_input("Bedrooms", 1)
         with c6:
-            BathroomsTotalInteger = st.number_input("Bathrooms", min_value=0.5, step=0.5)
+            BathroomsTotalInteger = st.number_input("Bathrooms", 0.5, step=0.5)
 
-        # --- FEATURES ---
+        # FEATURES
         st.markdown("#### Home Features")
         c7, c8 = st.columns(2)
 
         with c7:
             FireplaceYN = st.selectbox("Fireplace", ["No", "Yes"])
-
         with c8:
             PoolPrivateYN = st.selectbox("Private Pool", ["No", "Yes"])
 
-        ParkingTotal = st.number_input("Total Parking", min_value=0, step=1)
+        ParkingTotal = st.number_input("Total Parking", 0, step=1)
 
-        # --- MARKET ---
+        # MARKET
         st.markdown("#### Market Info")
         c9, c10 = st.columns(2)
 
         with c9:
-            DaysOnMarket = st.number_input("Days on Market", min_value=0, step=1)
-
+            DaysOnMarket = st.number_input("Days on Market", 0, step=1)
         with c10:
-            YearBuilt = st.number_input(
-                "Year Built",
-                min_value=1800,
-                max_value=pd.Timestamp.now().year
-            )
+            YearBuilt = st.number_input("Year Built", 1800, pd.Timestamp.now().year)
 
         submitted = st.form_submit_button("Predict Price")
 
-    # --- INPUT VALIDATION ---
+    # Validation
     def validate():
         errors = []
         if BathroomsTotalInteger > BedroomsTotal + 3:
             errors.append("Bathrooms unusually high relative to bedrooms.")
-
         if LotSizeAcres > 0 and LivingArea > LotSizeAcres * 43560:
-            errors.append("Living area exceeds lot size (sqft).")
-
+            errors.append("Living area exceeds total lot size.")
         return errors
 
-    # --- ON SUBMISSION ---
     if submitted:
-
         errors = validate()
         if errors:
-            st.error("Please fix the following issues:")
+            st.error("Fix the following issues:")
             for e in errors:
-                st.write(f"- {e}")
+                st.write("- " + e)
             st.stop()
 
-        # encode booleans
         bool_map = {"No": 0, "Yes": 1}
         FireplaceYN = bool_map[FireplaceYN]
         PoolPrivateYN = bool_map[PoolPrivateYN]
 
-        # construct row
+        # build row in the correct order
         row = pd.DataFrame([[
             DaysOnMarket,
             Latitude,
@@ -175,52 +160,59 @@ with tab_pred:
             Stories
         ]], columns=feature_order)
 
-        # prediction
-        y_log = model.predict(row)[0]
+        # Convert to DMatrix (stable for XGBoost JSON models)
+        dmatrix = xgb.DMatrix(row)
+
+        # Predict log-price then exponentiate
+        y_log = booster.predict(dmatrix)[0]
         y_pred = np.expm1(y_log)
 
-        # confidence interval via MdAPE
-        lower = y_pred / (1 + MdAPE / 100)
-        upper = y_pred * (1 + MdAPE / 100)
+        # Confidence band using MdAPE
+        lower = y_pred / (1 + MdAPE/100)
+        upper = y_pred * (1 + MdAPE/100)
 
-        st.write(f"### Estimated Close Price: **${y_pred:,.0f}**")
-        st.write(f"**Confidence Interval:** ${lower:,.0f} — ${upper:,.0f}")
+        st.success(f"### Estimated Close Price: **${y_pred:,.0f}**")
+        st.write(f"**Confidence Range:** ${lower:,.0f} → ${upper:,.0f}")
 
-# tab 2: feature importance
+# ------------------------------------------------------------
+# Tab 2: Feature Importance
+# ------------------------------------------------------------
 with tab_importance:
-
     st.subheader("Feature Importance (XGBoost)")
 
-    importances = model.feature_importances_
-    sorted_idx = np.argsort(importances)
+    importances = booster.get_score(importance_type="weight")
 
-    clean_features = [
-        pretty_names.get(f, f)
-        for f in np.array(feature_order)[sorted_idx]
-    ]
+    # convert key names to pretty form
+    items = []
+    for feat, score in importances.items():
+        name = pretty_names.get(feat, feat)
+        items.append((name, score))
+
+    items = sorted(items, key=lambda x: x[1])
+
+    labels = [i[0] for i in items]
+    values = [i[1] for i in items]
 
     fig, ax = plt.subplots(figsize=(8, 6))
-    ax.barh(clean_features, importances[sorted_idx], color="#4B9CD3")
+    ax.barh(labels, values, color="#4B9CD3")
     ax.set_xlabel("Importance")
-    plt.tight_layout()
     st.pyplot(fig)
 
-# tab 3: model summary
+# ------------------------------------------------------------
+# Tab 3: Model Summary
+# ------------------------------------------------------------
 with tab_summary:
-
     st.subheader("Model Summary")
-
     st.write(f"""
-    **Model Type:** XGBoost Regressor  
-    **Region:** California MLS  
-    **Features Used:** 12  
+    **Model:** XGBoost Regressor  
     **Training Samples:** {TRAIN_SAMPLES:,}  
+    **Features:** {len(feature_order)}  
 
-    ### Performance  
-    - **R²:** {R2}  
-    - **MAPE:** {MAPE}%  
-    - **Median APE:** {MdAPE}%  
+    ### Performance
+    - **R²:** {R2}
+    - **MAPE:** {MAPE}%
+    - **Median APE:** {MdAPE}%
 
-    The model predicts **log-transformed sale price** and applies an exponential 
-    transformation to return dollar-valued estimates.
+    The model predicts log-transformed sale prices and
+    converts them back to dollar values via `exp`.
     """)
